@@ -17,8 +17,8 @@ import logging
 def main():
     args, log = setup()
 
-    train = flatten_json(args.trn_file, 'train')
-    dev = flatten_json(args.dev_file, 'dev')
+    train = my_flatten_json(args.trn_file)
+    dev = my_flatten_json(args.dev_file)
     log.info('json data flattened.')
 
     # tokenize & annotate
@@ -26,10 +26,6 @@ def main():
         annotate_ = partial(annotate, wv_cased=args.wv_cased)
         train = list(tqdm(p.imap(annotate_, train, chunksize=args.batch_size), total=len(train), desc='train'))
         dev = list(tqdm(p.imap(annotate_, dev, chunksize=args.batch_size), total=len(dev), desc='dev  '))
-    train = list(map(index_answer, train))
-    initial_len = len(train)
-    train = list(filter(lambda x: x[-1] is not None, train))
-    log.info('drop {} inconsistent samples.'.format(initial_len - len(train)))
     log.info('tokens generated')
 
     # load vocabulary from word vector files
@@ -85,24 +81,24 @@ def main():
         'embedding': embeddings.tolist(),
         'wv_cased': args.wv_cased,
     }
-    with open('SQuAD/meta.msgpack', 'wb') as f:
+    with open('meta/meta.msgpack', 'wb') as f:
         msgpack.dump(meta, f)
     result = {
         'train': train,
         'dev': dev
     }
     # train: id, context_id, context_features, tag_id, ent_id,
-    #        question_id, context, context_token_span, answer_start, answer_end
+    #        question_id, context, context_token_span, answer
     # dev:   id, context_id, context_features, tag_id, ent_id,
     #        question_id, context, context_token_span, answer
-    with open('SQuAD/data.msgpack', 'wb') as f:
+    with open('boolq/data.msgpack', 'wb') as f:
         msgpack.dump(result, f)
     if args.sample_size:
         sample = {
             'train': train[:args.sample_size],
             'dev': dev[:args.sample_size]
         }
-        with open('SQuAD/sample.msgpack', 'wb') as f:
+        with open('boolq/sample.msgpack', 'wb') as f:
             msgpack.dump(sample, f)
     log.info('saved to disk.')
 
@@ -110,9 +106,9 @@ def setup():
     parser = argparse.ArgumentParser(
         description='Preprocessing data files, about 10 minitues to run.'
     )
-    parser.add_argument('--trn_file', default='SQuAD/train-v1.1.json',
+    parser.add_argument('--trn_file', default='boolq/train.jsonl',
                         help='path to train file.')
-    parser.add_argument('--dev_file', default='SQuAD/dev-v1.1.json',
+    parser.add_argument('--dev_file', default='boolq/dev.jsonl',
                         help='path to dev file.')
     parser.add_argument('--wv_file', default='glove/glove.840B.300d.txt',
                         help='path to word vector file.')
@@ -126,7 +122,7 @@ def setup():
                              'Otherwise consider question words first.')
     parser.add_argument('--sample_size', type=int, default=0,
                         help='size of sample data (for debugging).')
-    parser.add_argument('--threads', type=int, default=min(multiprocessing.cpu_count(), 16),
+    parser.add_argument('--threads', type=int, default=min(multiprocessing.cpu_count(), 4),
                         help='number of threads for preprocessing.')
     parser.add_argument('--batch_size', type=int, default=64,
                         help='batch size for multiprocess tokenizing and tagging.')
@@ -158,6 +154,17 @@ def flatten_json(data_file, mode):
                 else:  # mode == 'dev'
                     answers = [a['text'] for a in answers]
                     rows.append((id_, context, question, answers))
+    return rows
+
+def my_flatten_json(data_file):
+    """Flatten each article in training data."""
+    rows = []
+    with open(data_file) as f:
+        for id_, line in enumerate(f.readlines()):
+            data = json.loads(line)
+            context, question, answer = data['passage'], data['question'], data['answer']
+            rows.append((id_, context, question, int(answer)))
+
     return rows
 
 

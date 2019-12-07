@@ -92,6 +92,7 @@ class RnnDocReader(nn.Module):
             raise NotImplementedError('question_merge = %s' % opt['question_merge'])
         if opt['question_merge'] == 'self_attn':
             self.self_attn = layers.LinearSeqAttn(question_hidden_size)
+            self.self_doc_attn = layers.LinearSeqAttn(doc_hidden_size)
 
         # Bilinear attention for span start/end
         self.start_attn = layers.BilinearSeqAttn(
@@ -142,10 +143,11 @@ class RnnDocReader(nn.Module):
         if self.opt['question_merge'] == 'avg':
             q_merge_weights = layers.uniform_weights(question_hiddens, x2_mask)
         elif self.opt['question_merge'] == 'self_attn':
+            d_merge_weights = self.self_doc_attn(doc_hiddens, x1_mask)
             q_merge_weights = self.self_attn(question_hiddens, x2_mask)
+
+        document_hidden = layers.weighted_avg(doc_hiddens, d_merge_weights)
         question_hidden = layers.weighted_avg(question_hiddens, q_merge_weights)
 
         # Predict start and end positions
-        start_scores = self.start_attn(doc_hiddens, question_hidden, x1_mask)
-        end_scores = self.end_attn(doc_hiddens, question_hidden, x1_mask)
-        return start_scores, end_scores
+        return self.start_attn(document_hidden, question_hidden, x1_mask)

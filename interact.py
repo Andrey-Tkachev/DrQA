@@ -32,7 +32,7 @@ else:
 
 state_dict = checkpoint['state_dict']
 opt = checkpoint['config']
-with open('SQuAD/meta.msgpack', 'rb') as f:
+with open('meta/meta.msgpack', 'rb') as f:
     meta = msgpack.load(f, encoding='utf8')
 embedding = torch.Tensor(meta['embedding'])
 opt['pretrained_words'] = True

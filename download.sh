@@ -14,20 +14,20 @@ for ((i=0;i<${#REQUIRED[@]};++i)); do
     fi
 done
 
-# Download SQuAD & GloVe
-SQUAD_DIR=SQuAD
+# Download BOOLQ & GloVe
+BOOLQ_DIR=boolq
 GLOVE_DIR=glove
-mkdir -p $SQUAD_DIR
+mkdir -p $BOOLQ_DIR
 mkdir -p $GLOVE_DIR
 
 URLS=(
-    "https://rajpurkar.github.io/SQuAD-explorer/dataset/train-v1.1.json"
-    "https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v1.1.json"
+    "https://storage.cloud.google.com/boolq/train.jsonl"
+    "https://storage.cloud.google.com/boolq/dev.jsonl"
     "http://nlp.stanford.edu/data/glove.840B.300d.zip"
 )
 FILES=(
-    "$SQUAD_DIR/train-v1.1.json"
-    "$SQUAD_DIR/dev-v1.1.json"
+    "$BOOLQ_DIR/train.jsonl"
+    "$BOOLQ_DIR/dev.jsonl"
     "$GLOVE_DIR/glove.840B.300d.zip"
 )
 for ((i=0;i<${#URLS[@]};++i)); do

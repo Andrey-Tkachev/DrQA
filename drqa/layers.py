@@ -206,19 +206,18 @@ class BilinearSeqAttn(nn.Module):
 
     def forward(self, x, y, x_mask):
         """
-        x = batch * len * h1
+        x = batch * h1
         y = batch * h2
         x_mask = batch * len
         """
-        Wy = self.linear(y) if self.linear is not None else y
-        xWy = x.bmm(Wy.unsqueeze(2)).squeeze(2)
-        xWy.data.masked_fill_(x_mask.data, -float('inf'))
+        Wy = self.linear(y) if self.linear is not None else y  # batch * h1
+        xWy = x.unsqueeze(1).bmm(Wy.unsqueeze(2)).squeeze(2)
         if self.training:
             # In training we output log-softmax for NLL
-            alpha = F.log_softmax(xWy, dim=1)
+            alpha = torch.sigmoid(xWy)
         else:
             # ...Otherwise 0-1 probabilities
-            alpha = F.softmax(xWy, dim=1)
+            alpha = torch.sigmoid(xWy)
         return alpha
 
 

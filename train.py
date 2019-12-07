@@ -23,7 +23,7 @@ def main():
     log.info('[Data loaded.]')
     if args.save_dawn_logs:
         dawn_start = datetime.now()
-        log.info('dawn_entry: epoch\tf1Score\thours')
+        log.info('dawn_entry: epoch\taccuracy\thours')
 
     if args.resume:
         log.info('[loading previous model...]')
@@ -46,16 +46,17 @@ def main():
         for i, batch in enumerate(batches):
             predictions.extend(model.predict(batch))
             log.debug('> evaluating [{}/{}]'.format(i, len(batches)))
-        em, f1 = score(predictions, dev_y)
-        log.info("[dev EM: {} F1: {}]".format(em, f1))
-        if math.fabs(em - checkpoint['em']) > 1e-3 or math.fabs(f1 - checkpoint['f1']) > 1e-3:
-            log.info('Inconsistent: recorded EM: {} F1: {}'.format(checkpoint['em'], checkpoint['f1']))
+        accuracy = score(predictions, dev_y)
+        log.info(f"[dev accuracy {accuracy}]")
+        if math.fabs(accuracy - checkpoint['accuracy']) > 1e-3:
+            log.info('Inconsistent: recorded accuracy'.format(checkpoint['accuracy']))
             log.error('Error loading model: current code is inconsistent with code used to train the previous model.')
             exit(1)
         best_val_score = checkpoint['best_eval']
     else:
         model = DocReaderModel(opt, embedding)
         epoch_0 = 1
+        accuracy = 0.0
         best_val_score = 0.0
 
     for epoch in range(epoch_0, epoch_0 + args.epochs):
@@ -76,21 +77,22 @@ def main():
         for i, batch in enumerate(batches):
             predictions.extend(model.predict(batch))
             log.debug('> evaluating [{}/{}]'.format(i, len(batches)))
-        em, f1 = score(predictions, dev_y)
-        log.warning("dev EM: {} F1: {}".format(em, f1))
+        accuracy = score(predictions, dev_y)
+        log.warning("dev accuracy {}".format(em, f1))
         if args.save_dawn_logs:
             time_diff = datetime.now() - dawn_start
-            log.warning("dawn_entry: {}\t{}\t{}".format(epoch, f1/100.0, float(time_diff.total_seconds() / 3600.0)))
+            log.warning("dawn_entry: {}\t{}\t{}".format(epoch, accuracy, float(time_diff.total_seconds() / 3600.0)))
         # save
         if not args.save_last_only or epoch == epoch_0 + args.epochs - 1:
             model_file = os.path.join(args.model_dir, 'checkpoint_epoch_{}.pt'.format(epoch))
-            model.save(model_file, epoch, [em, f1, best_val_score])
-            if f1 > best_val_score:
-                best_val_score = f1
+            model.save(model_file, epoch, [accuracy, best_val_score])
+            if accuracy > best_val_score:
+                best_val_score = accuracy
                 copyfile(
                     model_file,
                     os.path.join(args.model_dir, 'best_model.pt'))
                 log.info('[new best model saved.]')
+    return best_val_score
 
 
 def setup():
@@ -100,7 +102,7 @@ def setup():
     # system
     parser.add_argument('--log_per_updates', type=int, default=3,
                         help='log model loss per x updates (mini-batches).')
-    parser.add_argument('--data_file', default='SQuAD/data.msgpack',
+    parser.add_argument('--data_file', default='meta/data.msgpack',
                         help='path to preprocessed data file.')
     parser.add_argument('--model_dir', default='models',
                         help='path to store saved models.')
@@ -210,7 +212,7 @@ def lr_decay(optimizer, lr_decay):
 
 
 def load_data(opt):
-    with open('SQuAD/meta.msgpack', 'rb') as f:
+    with open('meta/meta.msgpack', 'rb') as f:
         meta = msgpack.load(f, encoding='utf8')
     embedding = torch.Tensor(meta['embedding'])
     opt['pretrained_words'] = True
@@ -262,9 +264,9 @@ class BatchGen:
             batch_size = len(batch)
             batch = list(zip(*batch))
             if self.eval:
-                assert len(batch) == 8
+                assert len(batch) == 8, f'Eval expected f{len(batch)}'
             else:
-                assert len(batch) == 10
+                assert len(batch) == 9, f'Train expected f{len(batch)}'
 
             context_len = max(len(x) for x in batch[1])
             context_id = torch.LongTensor(batch_size, context_len).fill_(0)
@@ -298,8 +300,7 @@ class BatchGen:
             text = list(batch[6])
             span = list(batch[7])
             if not self.eval:
-                y_s = torch.LongTensor(batch[8])
-                y_e = torch.LongTensor(batch[9])
+                answ = torch.FloatTensor(batch[8])
             if self.gpu:
                 context_id = context_id.pin_memory()
                 context_feature = context_feature.pin_memory()
@@ -310,67 +311,14 @@ class BatchGen:
                 question_mask = question_mask.pin_memory()
             if self.eval:
                 yield (context_id, context_feature, context_tag, context_ent, context_mask,
-                       question_id, question_mask, text, span)
+                       question_id, question_mask, text, span, None)
             else:
                 yield (context_id, context_feature, context_tag, context_ent, context_mask,
-                       question_id, question_mask, y_s, y_e, text, span)
-
-
-def _normalize_answer(s):
-    def remove_articles(text):
-        return re.sub(r'\b(a|an|the)\b', ' ', text)
-
-    def white_space_fix(text):
-        return ' '.join(text.split())
-
-    def remove_punc(text):
-        exclude = set(string.punctuation)
-        return ''.join(ch for ch in text if ch not in exclude)
-
-    def lower(text):
-        return text.lower()
-
-    return white_space_fix(remove_articles(remove_punc(lower(s))))
-
-
-def _exact_match(pred, answers):
-    if pred is None or answers is None:
-        return False
-    pred = _normalize_answer(pred)
-    for a in answers:
-        if pred == _normalize_answer(a):
-            return True
-    return False
-
-
-def _f1_score(pred, answers):
-    def _score(g_tokens, a_tokens):
-        common = Counter(g_tokens) & Counter(a_tokens)
-        num_same = sum(common.values())
-        if num_same == 0:
-            return 0
-        precision = 1. * num_same / len(g_tokens)
-        recall = 1. * num_same / len(a_tokens)
-        f1 = (2 * precision * recall) / (precision + recall)
-        return f1
-
-    if pred is None or answers is None:
-        return 0
-    g_tokens = _normalize_answer(pred).split()
-    scores = [_score(g_tokens, _normalize_answer(a).split()) for a in answers]
-    return max(scores)
-
+                       question_id, question_mask, text, span, answ)
 
 def score(pred, truth):
     assert len(pred) == len(truth)
-    f1 = em = total = 0
-    for p, t in zip(pred, truth):
-        total += 1
-        em += _exact_match(p, t)
-        f1 += _f1_score(p, t)
-    em = 100. * em / total
-    f1 = 100. * f1 / total
-    return em, f1
+    return ((np.array(pred) == np.array(truth)).sum() + 0.0) / len(truth)
 
 
 if __name__ == '__main__':
