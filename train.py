@@ -6,6 +6,7 @@ import random
 import string
 import logging
 import argparse
+import numpy as np
 from shutil import copyfile
 from datetime import datetime
 from collections import Counter
