@@ -16,8 +16,8 @@ from drqa.model import DocReaderModel
 from drqa.utils import str2bool
 
 
-def main():
-    args, log = setup()
+def main(args=None):
+    args, log = setup(args=args)
     log.info('[Program starts. Loading data...]')
     train, dev, dev_y, embedding, opt = load_data(vars(args))
     log.info(opt)
@@ -79,7 +79,7 @@ def main():
             predictions.extend(model.predict(batch))
             log.debug('> evaluating [{}/{}]'.format(i, len(batches)))
         accuracy = score(predictions, dev_y)
-        log.warning("dev accuracy {}".format(em, f1))
+        log.warning("dev accuracy {}".format(accuracy))
         if args.save_dawn_logs:
             time_diff = datetime.now() - dawn_start
             log.warning("dawn_entry: {}\t{}\t{}".format(epoch, accuracy, float(time_diff.total_seconds() / 3600.0)))
@@ -96,7 +96,7 @@ def main():
     return best_val_score
 
 
-def setup():
+def setup(args=None):
     parser = argparse.ArgumentParser(
         description='Train a Document Reader model.'
     )
@@ -161,7 +161,7 @@ def setup():
     parser.add_argument('--rnn_type', default='lstm',
                         help='supported types: rnn, gru, lstm')
 
-    args = parser.parse_args()
+    args = parser.parse_args(args=args)
 
     # set model dir
     model_dir = args.model_dir

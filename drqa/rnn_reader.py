@@ -99,10 +99,6 @@ class RnnDocReader(nn.Module):
             doc_hidden_size,
             question_hidden_size,
         )
-        self.end_attn = layers.BilinearSeqAttn(
-            doc_hidden_size,
-            question_hidden_size,
-        )
 
     def forward(self, x1, x1_f, x1_pos, x1_ner, x1_mask, x2, x2_mask):
         """Inputs:

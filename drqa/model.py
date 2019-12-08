@@ -110,8 +110,7 @@ class DocReaderModel(object):
 
         # Transfer to CPU/normal tensors for numpy ops
         scores = scores.data.cpu()
-
-        predictions = [int(score) for score in scores]
+        predictions = [round(score.item()) for score in scores]
         return predictions
 
     def save(self, filename, epoch, scores):
