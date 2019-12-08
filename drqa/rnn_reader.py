@@ -109,7 +109,6 @@ class RnnDocReader(nn.Module):
             question_hidden_size,
         )
 
-
     def forward(self, x1, x1_f, x1_pos, x1_ner, x1_mask, x2, x2_mask):
         """Inputs:
         x1 = document word indices             [batch * len_d]

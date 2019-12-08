@@ -6,4 +6,8 @@ glove/
 models/
 *.log
 *.ipynb
+<<<<<<< HEAD
 *.msgpack
+=======
+*.msgpack
+>>>>>>> d88003332a1cb2f14d5323c0004cb5d9e6579168
