@@ -1,5 +1,9 @@
 SQuAD/
+boolq/
+meta/
 drqa/__pycache__/
 glove/
 models/
 *.log
+*.ipynb
+*.msgpack

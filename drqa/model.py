@@ -72,7 +72,9 @@ class DocReaderModel(object):
         self.network.train()
 
         # Transfer to GPU
-        inputs = [e.to(self.device) for e in ex[:7]]
+        def not_none(e, device):
+            return e.to(self.device) if e is not None else e
+        inputs = [not_none(e, self.device) for e in ex[:7]]
         target = ex[9].to(self.device)
 
         # Run forward
@@ -99,10 +101,13 @@ class DocReaderModel(object):
         self.network.eval()
 
         # Transfer to GPU
-        if self.opt['cuda']:
-            inputs = [Variable(e.cuda()) for e in ex[:7]]
-        else:
-            inputs = [Variable(e) for e in ex[:7]]
+        def not_none(e, gpu):
+            if e is None:
+                return None
+
+            return Variable(e.cuda()) if gpu else Variable(e)
+
+        inputs = [not_none(e, opt['cuda']) for e in ex[:7]]
 
         # Run forward
         with torch.no_grad():

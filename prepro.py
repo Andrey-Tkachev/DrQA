@@ -12,6 +12,7 @@ from tqdm import tqdm
 from functools import partial
 from drqa.utils import str2bool
 import logging
+from transformers import BertTokenizer
 
 
 def main():
@@ -22,57 +23,67 @@ def main():
     log.info('json data flattened.')
 
     # tokenize & annotate
-    with Pool(args.threads, initializer=init) as p:
-        annotate_ = partial(annotate, wv_cased=args.wv_cased)
+    with Pool(args.threads, initializer=init_bert if args.bert else init) as p:
+        if args.bert:
+            annotate_ = partial(annotate_bert)
+        else:
+            annotate_ = partial(annotate, wv_cased=args.wv_cased)
         train = list(tqdm(p.imap(annotate_, train, chunksize=args.batch_size), total=len(train), desc='train'))
         dev = list(tqdm(p.imap(annotate_, dev, chunksize=args.batch_size), total=len(dev), desc='dev  '))
     log.info('tokens generated')
 
     # load vocabulary from word vector files
-    wv_vocab = set()
-    with open(args.wv_file) as f:
-        for line in f:
-            token = normalize_text(line.rstrip().split(' ')[0])
-            wv_vocab.add(token)
-    log.info('glove vocab loaded.')
+    if not args.bert:
+        wv_vocab = set()
+        with open(args.wv_file) as f:
+            for line in f:
+                token = normalize_text(line.rstrip().split(' ')[0])
+                wv_vocab.add(token)
+        log.info('glove vocab loaded.')
 
     # build vocabulary
     full = train + dev
-    vocab, counter = build_vocab([row[5] for row in full], [row[1] for row in full], wv_vocab, args.sort_all)
-    total = sum(counter.values())
-    matched = sum(counter[t] for t in vocab)
-    log.info('vocab coverage {1}/{0} | OOV occurrence {2}/{3} ({4:.4f}%)'.format(
-        len(counter), len(vocab), (total - matched), total, (total - matched) / total * 100))
-    counter_tag = collections.Counter(w for row in full for w in row[3])
-    vocab_tag = sorted(counter_tag, key=counter_tag.get, reverse=True)
-    counter_ent = collections.Counter(w for row in full for w in row[4])
-    vocab_ent = sorted(counter_ent, key=counter_ent.get, reverse=True)
-    w2id = {w: i for i, w in enumerate(vocab)}
-    tag2id = {w: i for i, w in enumerate(vocab_tag)}
-    ent2id = {w: i for i, w in enumerate(vocab_ent)}
-    log.info('Vocabulary size: {}'.format(len(vocab)))
-    log.info('Found {} POS tags.'.format(len(vocab_tag)))
-    log.info('Found {} entity tags: {}'.format(len(vocab_ent), vocab_ent))
+    if not args.bert:
+        vocab, counter = build_vocab([row[5] for row in full], [row[1] for row in full], wv_vocab, args.sort_all)
+        total = sum(counter.values())
+        matched = sum(counter[t] for t in vocab)
+        log.info('vocab coverage {1}/{0} | OOV occurrence {2}/{3} ({4:.4f}%)'.format(
+            len(counter), len(vocab), (total - matched), total, (total - matched) / total * 100))
+        counter_tag = collections.Counter(w for row in full for w in row[3])
+        vocab_tag = sorted(counter_tag, key=counter_tag.get, reverse=True)
+        counter_ent = collections.Counter(w for row in full for w in row[4])
+        vocab_ent = sorted(counter_ent, key=counter_ent.get, reverse=True)
+        w2id = {w: i for i, w in enumerate(vocab)}
+        tag2id = {w: i for i, w in enumerate(vocab_tag)}
+        ent2id = {w: i for i, w in enumerate(vocab_ent)}
+        log.info('Vocabulary size: {}'.format(len(vocab)))
+        log.info('Found {} POS tags.'.format(len(vocab_tag)))
+        log.info('Found {} entity tags: {}'.format(len(vocab_ent), vocab_ent))
 
-    to_id_ = partial(to_id, w2id=w2id, tag2id=tag2id, ent2id=ent2id)
+    if args.bert:
+        tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+        to_id_ = partial(to_id_bert, tokenizer=tokenizer)
+    else:
+        to_id_ = partial(to_id, w2id=w2id, tag2id=tag2id, ent2id=ent2id)
     train = list(map(to_id_, train))
     dev = list(map(to_id_, dev))
     log.info('converted to ids.')
 
-    vocab_size = len(vocab)
-    embeddings = np.zeros((vocab_size, args.wv_dim))
-    embed_counts = np.zeros(vocab_size)
-    embed_counts[:2] = 1  # PADDING & UNK
-    with open(args.wv_file) as f:
-        for line in f:
-            elems = line.rstrip().split(' ')
-            token = normalize_text(elems[0])
-            if token in w2id:
-                word_id = w2id[token]
-                embed_counts[word_id] += 1
-                embeddings[word_id] += [float(v) for v in elems[1:]]
-    embeddings /= embed_counts.reshape((-1, 1))
-    log.info('got embedding matrix.')
+    if not args.bert:
+        vocab_size = len(vocab)
+        embeddings = np.zeros((vocab_size, args.wv_dim))
+        embed_counts = np.zeros(vocab_size)
+        embed_counts[:2] = 1  # PADDING & UNK
+        with open(args.wv_file) as f:
+            for line in f:
+                elems = line.rstrip().split(' ')
+                token = normalize_text(elems[0])
+                if token in w2id:
+                    word_id = w2id[token]
+                    embed_counts[word_id] += 1
+                    embeddings[word_id] += [float(v) for v in elems[1:]]
+        embeddings /= embed_counts.reshape((-1, 1))
+        log.info('got embedding matrix.')
 
     meta = {
         'vocab': vocab,
@@ -80,7 +91,11 @@ def main():
         'vocab_ent': vocab_ent,
         'embedding': embeddings.tolist(),
         'wv_cased': args.wv_cased,
+        'bert': False
+    } if not args.bert else {
+        'bert': True
     }
+
     with open('meta/meta.msgpack', 'wb') as f:
         msgpack.dump(meta, f)
     result = {
@@ -124,6 +139,8 @@ def setup():
                         help='size of sample data (for debugging).')
     parser.add_argument('--threads', type=int, default=min(multiprocessing.cpu_count(), 4),
                         help='number of threads for preprocessing.')
+    parser.add_argument('--bert', action='store_true',
+                        help='use bert embeddings')
     parser.add_argument('--batch_size', type=int, default=64,
                         help='batch size for multiprocess tokenizing and tagging.')
     args = parser.parse_args()
@@ -179,12 +196,18 @@ def normalize_text(text):
 
 
 nlp = None
-
+tokenizer = None
 
 def init():
     """initialize spacy in each process"""
     global nlp
     nlp = spacy.load('en', parser=False)
+
+
+def init_bert():
+    """initialize bert tokenizer in each process"""
+    global tokenizer
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
 
 def annotate(row, wv_cased):
@@ -217,15 +240,13 @@ def annotate(row, wv_cased):
             question_tokens, context, context_token_span) + row[3:]
 
 
-def index_answer(row):
-    token_span = row[-4]
-    starts, ends = zip(*token_span)
-    answer_start = row[-2]
-    answer_end = row[-1]
-    try:
-        return row[:-3] + (starts.index(answer_start), ends.index(answer_end))
-    except ValueError:
-        return row[:-3] + (None, None)
+def annotate_bert(row):
+    global tokenizer
+    id_, context, question = row[:3]
+    context_tokens = tokenizer.tokenize(context)
+    question_tokens = tokenizer.tokenize(question)
+    return (id_, context_tokens, None, None, None,
+            question_tokens, None, None) + row[3:]
 
 
 def build_vocab(questions, contexts, wv_vocab, sort_all=False):
@@ -259,6 +280,19 @@ def to_id(row, w2id, tag2id, ent2id, unk_id=1):
     tag_ids = [tag2id[w] for w in context_tags]
     ent_ids = [ent2id[w] for w in context_ents]
     return (row[0], context_ids, context_features, tag_ids, ent_ids, question_ids) + row[6:]
+
+
+def to_id_bert(row, tokenizer):
+    context_tokens = row[1]
+    # context_features = row[2]
+    # context_tags = row[3]
+    # context_ents = row[4]
+    question_tokens = row[5]
+    context_ids = tokenizer.encode(question_tokens, add_special_tokens=True, max_length=512)
+    question_ids = tokenizer.encode(question_tokens, add_special_tokens=True, max_length=512)
+    # tag_ids = [tag2id[w] for w in context_tags]
+    # ent_ids = [ent2id[w] for w in context_ents]
+    return (row[0], context_ids, None, None, None, question_ids) + row[6:]
 
 
 if __name__ == '__main__':

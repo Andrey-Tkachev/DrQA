@@ -14,6 +14,7 @@ import torch
 import msgpack
 from drqa.model import DocReaderModel
 from drqa.utils import str2bool
+from transformers import BertTokenizer
 
 
 def main():
@@ -63,7 +64,7 @@ def main():
     for epoch in range(epoch_0, epoch_0 + args.epochs):
         log.warning('Epoch {}'.format(epoch))
         # train
-        batches = BatchGen(train, batch_size=args.batch_size, gpu=args.cuda)
+        batches = BatchGen(train, batch_size=args.batch_size, gpu=args.cuda, bert=opt['bert'])
         start = datetime.now()
         for i, batch in enumerate(batches):
             model.update(batch)
@@ -73,7 +74,7 @@ def main():
                     str((datetime.now() - start) / (i + 1) * (len(batches) - i - 1)).split('.')[0]))
         log.debug('\n')
         # eval
-        batches = BatchGen(dev, batch_size=args.batch_size, evaluation=True, gpu=args.cuda)
+        batches = BatchGen(dev, batch_size=args.batch_size, evaluation=True, gpu=args.cuda, bert=opt['bert'])
         predictions = []
         for i, batch in enumerate(batches):
             predictions.extend(model.predict(batch))
@@ -103,7 +104,7 @@ def setup():
     # system
     parser.add_argument('--log_per_updates', type=int, default=3,
                         help='log model loss per x updates (mini-batches).')
-    parser.add_argument('--data_file', default='meta/data.msgpack',
+    parser.add_argument('--data_file', default='boolq/data.msgpack',
                         help='path to preprocessed data file.')
     parser.add_argument('--model_dir', default='models',
                         help='path to store saved models.')
@@ -215,14 +216,20 @@ def lr_decay(optimizer, lr_decay):
 def load_data(opt):
     with open('meta/meta.msgpack', 'rb') as f:
         meta = msgpack.load(f, encoding='utf8')
-    embedding = torch.Tensor(meta['embedding'])
-    opt['pretrained_words'] = True
-    opt['vocab_size'] = embedding.size(0)
-    opt['embedding_dim'] = embedding.size(1)
-    opt['pos_size'] = len(meta['vocab_tag'])
-    opt['ner_size'] = len(meta['vocab_ent'])
-    BatchGen.pos_size = opt['pos_size']
-    BatchGen.ner_size = opt['ner_size']
+    opt['bert'] = meta['bert']
+    if not opt['bert']:
+        embedding = torch.Tensor(meta['embedding'])
+        opt['pretrained_words'] = True
+        opt['vocab_size'] = embedding.size(0)
+        opt['embedding_dim'] = embedding.size(1)
+        opt['pos_size'] = len(meta['vocab_tag'])
+        opt['ner_size'] = len(meta['vocab_ent'])
+        BatchGen.pos_size = opt['pos_size']
+        BatchGen.ner_size = opt['ner_size']
+    else:
+        embedding = None
+        opt['pretrained_words'] = False
+        opt['embedding_dim'] = 768
     with open(opt['data_file'], 'rb') as f:
         data = msgpack.load(f, encoding='utf8')
     train = data['train']
@@ -236,7 +243,7 @@ class BatchGen:
     pos_size = None
     ner_size = None
 
-    def __init__(self, data, batch_size, gpu, evaluation=False):
+    def __init__(self, data, batch_size, gpu, evaluation=False, bert=False):
         """
         input:
             data - list of lists
@@ -245,6 +252,10 @@ class BatchGen:
         self.batch_size = batch_size
         self.eval = evaluation
         self.gpu = gpu
+        self.bert = bert
+        self.pad_token = 0
+        if bert:
+            self.pad_token = BertTokenizer.from_pretrained('bert-base-uncased').pad_token_id
 
         # sort by len
         data = sorted(data, key=lambda x: len(x[1]))
@@ -270,43 +281,53 @@ class BatchGen:
                 assert len(batch) == 9, f'Train expected f{len(batch)}'
 
             context_len = max(len(x) for x in batch[1])
-            context_id = torch.LongTensor(batch_size, context_len).fill_(0)
+            context_id = torch.LongTensor(batch_size, context_len).fill_(self.pad_token)
             for i, doc in enumerate(batch[1]):
                 context_id[i, :len(doc)] = torch.LongTensor(doc)
 
-            feature_len = len(batch[2][0][0])
+            if not self.bert:
+                feature_len = len(batch[2][0][0])
 
-            context_feature = torch.Tensor(batch_size, context_len, feature_len).fill_(0)
-            for i, doc in enumerate(batch[2]):
-                for j, feature in enumerate(doc):
-                    context_feature[i, j, :] = torch.Tensor(feature)
+                context_feature = torch.Tensor(batch_size, context_len, feature_len).fill_(0)
+                for i, doc in enumerate(batch[2]):
+                    for j, feature in enumerate(doc):
+                        context_feature[i, j, :] = torch.Tensor(feature)
 
-            context_tag = torch.Tensor(batch_size, context_len, self.pos_size).fill_(0)
-            for i, doc in enumerate(batch[3]):
-                for j, tag in enumerate(doc):
-                    context_tag[i, j, tag] = 1
+                context_tag = torch.Tensor(batch_size, context_len, self.pos_size).fill_(0)
+                for i, doc in enumerate(batch[3]):
+                    for j, tag in enumerate(doc):
+                        context_tag[i, j, tag] = 1
 
-            context_ent = torch.Tensor(batch_size, context_len, self.ner_size).fill_(0)
-            for i, doc in enumerate(batch[4]):
-                for j, ent in enumerate(doc):
-                    context_ent[i, j, ent] = 1
+                context_ent = torch.Tensor(batch_size, context_len, self.ner_size).fill_(0)
+                for i, doc in enumerate(batch[4]):
+                    for j, ent in enumerate(doc):
+                        context_ent[i, j, ent] = 1
+            else:
+                context_feature = None
+                context_tag = None
+                context_ent = None
 
             question_len = max(len(x) for x in batch[5])
-            question_id = torch.LongTensor(batch_size, question_len).fill_(0)
+            question_id = torch.LongTensor(batch_size, question_len).fill_(self.pad_token)
             for i, doc in enumerate(batch[5]):
                 question_id[i, :len(doc)] = torch.LongTensor(doc)
 
-            context_mask = torch.eq(context_id, 0)
-            question_mask = torch.eq(question_id, 0)
+            context_mask = torch.eq(context_id, self.pad_token)
+            question_mask = torch.eq(question_id, self.pad_token)
             text = list(batch[6])
             span = list(batch[7])
             if not self.eval:
                 answ = torch.FloatTensor(batch[8])
             if self.gpu:
                 context_id = context_id.pin_memory()
-                context_feature = context_feature.pin_memory()
-                context_tag = context_tag.pin_memory()
-                context_ent = context_ent.pin_memory()
+                if not self.bert:
+                    context_feature = context_feature.pin_memory()
+                    context_tag = context_tag.pin_memory()
+                    context_ent = context_ent.pin_memory()
+                else:
+                    context_feature = None
+                    context_tag = None
+                    context_ent = None
                 context_mask = context_mask.pin_memory()
                 question_id = question_id.pin_memory()
                 question_mask = question_mask.pin_memory()

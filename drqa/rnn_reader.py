@@ -6,6 +6,8 @@
 import torch
 import torch.nn as nn
 from . import layers
+from transformers import BertModel
+
 
 # Modification:
 #   - add 'pos' and 'ner' features.
@@ -39,7 +41,9 @@ class RnnDocReader(nn.Module):
 
                 self.embedding.weight.register_hook(embedding_hook)
 
-        else:  # random initialized
+        elif opt['bert']:
+            self.embedding = BertModel.from_pretrained('bert-base-uncased')
+        else: # random initialized
             self.embedding = nn.Embedding(opt['vocab_size'],
                                           opt['embedding_dim'],
                                           padding_idx=padding_idx)
@@ -48,13 +52,18 @@ class RnnDocReader(nn.Module):
             self.qemb_match = layers.SeqAttnMatch(opt['embedding_dim'])
 
         # Input size to RNN: word emb + question emb + manual features
-        doc_input_size = opt['embedding_dim'] + opt['num_features']
-        if opt['use_qemb']:
-            doc_input_size += opt['embedding_dim']
-        if opt['pos']:
-            doc_input_size += opt['pos_size']
-        if opt['ner']:
-            doc_input_size += opt['ner_size']
+        if not opt['bert']:
+            doc_input_size = opt['embedding_dim'] + opt['num_features']
+            if opt['use_qemb']:
+                doc_input_size += opt['embedding_dim']
+            if opt['pos']:
+                doc_input_size += opt['pos_size']
+            if opt['ner']:
+                doc_input_size += opt['ner_size']
+        else:
+            doc_input_size = opt['embedding_dim']
+            if opt['use_qemb']:
+                doc_input_size += opt['embedding_dim']
 
         # RNN document encoder
         self.doc_rnn = layers.StackedBRNN(
@@ -99,10 +108,7 @@ class RnnDocReader(nn.Module):
             doc_hidden_size,
             question_hidden_size,
         )
-        self.end_attn = layers.BilinearSeqAttn(
-            doc_hidden_size,
-            question_hidden_size,
-        )
+
 
     def forward(self, x1, x1_f, x1_pos, x1_ner, x1_mask, x2, x2_mask):
         """Inputs:
@@ -118,6 +124,9 @@ class RnnDocReader(nn.Module):
         x1_emb = self.embedding(x1)
         x2_emb = self.embedding(x2)
 
+        if self.opt['bert']:
+            x1_emb, x2_emb = x1_emb[0], x2_emb[0]
+
         # Dropout on embeddings
         if self.opt['dropout_emb'] > 0:
             x1_emb = nn.functional.dropout(x1_emb, p=self.opt['dropout_emb'],
@@ -125,16 +134,21 @@ class RnnDocReader(nn.Module):
             x2_emb = nn.functional.dropout(x2_emb, p=self.opt['dropout_emb'],
                                            training=self.training)
 
-        drnn_input_list = [x1_emb, x1_f]
         # Add attention-weighted question representation
+        drnn_input_list = [x1_emb]
         if self.opt['use_qemb']:
             x2_weighted_emb = self.qemb_match(x1_emb, x2_emb, x2_mask)
             drnn_input_list.append(x2_weighted_emb)
-        if self.opt['pos']:
-            drnn_input_list.append(x1_pos)
-        if self.opt['ner']:
-            drnn_input_list.append(x1_ner)
-        drnn_input = torch.cat(drnn_input_list, 2)
+
+        if not self.opt['bert']:
+            drnn_input_list.append(x1_f)
+
+            if self.opt['pos']:
+                drnn_input_list.append(x1_pos)
+            if self.opt['ner']:
+                drnn_input_list.append(x1_ner)
+
+        drnn_input = torch.cat(drnn_input_list, 2) if len(drnn_input_list) > 1 else drnn_input_list[0]
         # Encode document with RNN
         doc_hiddens = self.doc_rnn(drnn_input, x1_mask)
 
